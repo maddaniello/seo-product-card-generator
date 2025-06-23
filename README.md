@@ -1,0 +1,1 @@
+# seo-product-card-generator
