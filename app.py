@@ -385,5 +385,13 @@ def main():
         elif not site_name or not site_url:
             st.info("🌐 Completa le informazioni del sito nella sidebar")
 
+ # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; color: #666;'>
+        <p>SEO Product Card Generator - Crea schede prodotto e-commerce ottimizzate partendo da un catalogo - Sviluppato da Daniele Pisciottano e il suo amico Claude 🦕</p>
+    </div>
+    """, unsafe_allow_html=True)
+
 if __name__ == "__main__":
     main()
