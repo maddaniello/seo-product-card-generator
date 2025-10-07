@@ -134,42 +134,86 @@ class ProductCardGenerator:
         except Exception as e:
             return ""
     
-    def get_ean_context(self, ean: str) -> str:
+    def get_ean_context(self, ean: str, product_code: str = None) -> str:
         """Ottieni contesto da ricerca EAN su Google"""
         st.info(f"🔍 Ricerca informazioni per EAN: {ean}")
+        
+        # Inizializza log per questo EAN
+        ean_log = {
+            'timestamp': datetime.now().isoformat(),
+            'ean': ean,
+            'product_code': product_code or 'N/A',
+            'search_results': [],
+            'scraped_data': [],
+            'total_characters': 0,
+            'successful_scrapes': 0,
+            'failed_scrapes': 0
+        }
         
         # Cerca su Google
         urls = self.search_ean_on_google(ean)
         
         if not urls:
             st.warning("⚠️ Nessun risultato trovato per questo EAN")
+            ean_log['status'] = 'no_results'
+            st.session_state.ean_logs.append(ean_log)
             return ""
         
         st.success(f"✅ Trovati {len(urls)} risultati")
+        ean_log['search_results'] = urls
         
         # Scrape contenuto
         contexts = []
         progress_bar = st.progress(0)
         
-        for i, url in enumerate(urls):
-            with st.spinner(f"Estrazione contenuto {i+1}/{len(urls)}..."):
+        # Expander per mostrare il progresso in tempo reale
+        with st.expander(f"📊 Log Estrazione EAN: {ean}", expanded=False):
+            for i, url in enumerate(urls):
+                st.markdown(f"**{i+1}. {url}**")
+                
                 content = self.scrape_product_page(url)
+                
+                scrape_log = {
+                    'url': url,
+                    'position': i + 1,
+                    'characters_extracted': len(content),
+                    'success': bool(content)
+                }
+                
                 if content:
                     contexts.append(content)
+                    ean_log['successful_scrapes'] += 1
+                    st.success(f"✅ Estratti {len(content)} caratteri")
+                    
+                    # Mostra preview del contenuto
+                    st.caption(f"Preview: {content[:200]}...")
+                    scrape_log['preview'] = content[:200]
+                else:
+                    ean_log['failed_scrapes'] += 1
+                    st.warning("❌ Estrazione fallita")
+                    scrape_log['preview'] = None
+                
+                ean_log['scraped_data'].append(scrape_log)
                 progress_bar.progress((i + 1) / len(urls))
-                time.sleep(0.5)  # Rate limiting
+                time.sleep(0.5)
         
         progress_bar.empty()
         
         # Combina contesti
         combined_context = "\n\n".join(contexts)
+        ean_log['total_characters'] = len(combined_context)
         
         if combined_context:
             st.success(f"✅ Estratti {len(contexts)} contenuti ({len(combined_context)} caratteri)")
-            return combined_context
+            ean_log['status'] = 'success'
         else:
             st.warning("⚠️ Nessun contenuto estratto")
-            return ""
+            ean_log['status'] = 'failed'
+        
+        # Salva log in session state
+        st.session_state.ean_logs.append(ean_log)
+        
+        return combined_context
     
     def create_prompt(self, product_data: Dict, site_info: Dict, column_mapping: Dict, 
                      additional_instructions: str, fields_to_generate: List[str], 
@@ -289,7 +333,8 @@ Importante: Rispondi SOLO con il JSON, senza testo aggiuntivo."""
     
     def generate_product_content(self, product_data: Dict, site_info: Dict, 
                                 column_mapping: Dict, additional_instructions: str,
-                                fields_to_generate: List[str], ean_column: str = None) -> Optional[Dict]:
+                                fields_to_generate: List[str], ean_column: str = None,
+                                product_code: str = None) -> Optional[Dict]:
         """Genera contenuti per un singolo prodotto con retry logic"""
         max_retries = 3
         retry_delay = 1
@@ -299,7 +344,7 @@ Importante: Rispondi SOLO con il JSON, senza testo aggiuntivo."""
         if ean_column and ean_column in product_data:
             ean = str(product_data[ean_column])
             if ean and ean.strip() and ean != 'nan':
-                ean_context = self.get_ean_context(ean)
+                ean_context = self.get_ean_context(ean, product_code)
         
         for attempt in range(max_retries):
             try:
@@ -358,6 +403,8 @@ def initialize_session_state():
         st.session_state.processing_session_id = None
     if 'fields_to_generate' not in st.session_state:
         st.session_state.fields_to_generate = ["Titolo Prodotto", "Description", "Meta Title", "Meta Description"]
+    if 'ean_logs' not in st.session_state:
+        st.session_state.ean_logs = []
 
 def reset_processing_state():
     """Reset dello stato di elaborazione"""
@@ -366,6 +413,7 @@ def reset_processing_state():
     st.session_state.current_index = 0
     st.session_state.total_products = 0
     st.session_state.processing_session_id = None
+    st.session_state.ean_logs = []
 
 def save_checkpoint(results: List[Dict], session_id: str):
     """Salva un checkpoint dei risultati"""
@@ -393,7 +441,7 @@ def process_batch(generator, batch_data, site_info, column_mapping, additional_i
         # Genera contenuto
         generated_content = generator.generate_product_content(
             row.to_dict(), site_info, column_mapping, additional_instructions,
-            fields_to_generate, ean_column
+            fields_to_generate, ean_column, product_code
         )
         
         if generated_content:
@@ -573,6 +621,71 @@ def main():
             placeholder="Esempi:\n- Usa emoji\n- Includi materiale nel titolo\n- Max 60 caratteri per titolo"
         )
     
+    # Mostra stato elaborazione se in corso
+    if st.session_state.processing_status != 'idle':
+        st.markdown("---")
+        st.subheader("📊 Stato Elaborazione")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📋 Prodotti totali", st.session_state.total_products)
+        with col2:
+            st.metric("✅ Elaborati", st.session_state.current_index)
+        with col3:
+            progress_pct = (st.session_state.current_index / st.session_state.total_products * 100) if st.session_state.total_products > 0 else 0
+            st.metric("📈 Progresso", f"{progress_pct:.1f}%")
+        with col4:
+            remaining = st.session_state.total_products - st.session_state.current_index
+            st.metric("⏳ Rimanenti", remaining)
+        
+        # Progress bar
+        progress_value = st.session_state.current_index / st.session_state.total_products if st.session_state.total_products > 0 else 0
+        st.progress(progress_value)
+        
+        # Pulsanti controllo
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("⏸️ Pausa", disabled=(st.session_state.processing_status != 'processing')):
+                st.session_state.processing_status = 'paused'
+                st.rerun()
+        with col2:
+            if st.button("▶️ Riprendi", disabled=(st.session_state.processing_status != 'paused')):
+                st.session_state.processing_status = 'processing'
+                st.rerun()
+        with col3:
+            if st.button("⏹️ Stop e Reset"):
+                reset_processing_state()
+                st.rerun()
+        
+        # Download risultati parziali
+        if st.session_state.results:
+            st.markdown("---")
+            st.subheader("📥 Download Risultati Parziali")
+            
+            df_partial = pd.DataFrame(st.session_state.results)
+            csv_buffer = io.StringIO()
+            df_partial.to_csv(csv_buffer, index=False, encoding='utf-8')
+            csv_string = csv_buffer.getvalue()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label=f"📥 Scarica {len(st.session_state.results)} risultati parziali",
+                    data=csv_string,
+                    file_name=f"risultati_parziali_{int(time.time())}.csv",
+                    mime="text/csv"
+                )
+            with col2:
+                # Download log EAN parziali
+                if st.session_state.ean_logs:
+                    json_logs = json.dumps(st.session_state.ean_logs, indent=2, ensure_ascii=False)
+                    st.download_button(
+                        label=f"📊 Scarica {len(st.session_state.ean_logs)} log EAN parziali",
+                        data=json_logs,
+                        file_name=f"ean_logs_parziali_{int(time.time())}.json",
+                        mime="application/json"
+                    )
+    
     # Area principale
     col1, col2 = st.columns([2, 1])
     
@@ -676,6 +789,35 @@ def main():
         - 🔍 Serper: {'✅ Attivo' if serper_key else '❌ Non attivo'}
         - 📝 Campi: {len(selected_fields)}
         """)
+        
+        # Log EAN in tempo reale (durante elaborazione)
+        if st.session_state.ean_logs and st.session_state.processing_status != 'idle':
+            st.markdown("---")
+            st.subheader("📊 Log EAN Live")
+            st.metric("🔍 EAN Processati", len(st.session_state.ean_logs))
+            
+            if st.session_state.ean_logs:
+                last_log = st.session_state.ean_logs[-1]
+                st.caption(f"**Ultimo EAN:** {last_log.get('ean', 'N/A')}")
+                st.caption(f"**Status:** {last_log.get('status', 'N/A')}")
+                st.caption(f"**Caratteri:** {last_log.get('total_characters', 0):,}")
+    
+    # Mostra stato elaborazione se in corso
+    if st.session_state.processing_status != 'idle':
+        st.markdown("---")
+        st.subheader("📊 Stato Elaborazione")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📋 Prodotti totali", st.session_state.total_products)
+        with col2:
+            st.metric("✅ Elaborati", st.session_state.current_index)
+        with col3:
+            progress_pct = (st.session_state.current_index / st.session_state.total_products * 100) if st.session_state.total_products > 0 else 0
+            st.metric("📈 Progresso", f"{progress_pct:.1f}%")
+        with col4:
+            remaining = st.session_state.total_products - st.session_state.current_index
+            st.metric("⏳ Rimanenti", remaining)
     
     # Pulsante avvio generazione
     if ('csv_data' in locals() and column_mapping and site_name and site_url and
@@ -754,7 +896,7 @@ def main():
         df_results.to_csv(csv_buffer, index=False, encoding='utf-8')
         csv_string = csv_buffer.getvalue()
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.download_button(
                 label="📥 Scarica Risultati CSV",
@@ -765,9 +907,97 @@ def main():
                 use_container_width=True
             )
         with col2:
+            # Download log EAN se disponibili
+            if st.session_state.ean_logs:
+                json_logs = json.dumps(st.session_state.ean_logs, indent=2, ensure_ascii=False)
+                st.download_button(
+                    label="📊 Scarica Log EAN (JSON)",
+                    data=json_logs,
+                    file_name=f"ean_logs_{int(time.time())}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+        with col3:
             if st.button("🔄 Nuova Elaborazione", use_container_width=True):
                 reset_processing_state()
                 st.rerun()
+        
+        # Statistiche EAN se disponibili
+        if st.session_state.ean_logs:
+            st.markdown("---")
+            st.subheader("🔍 Statistiche Ricerca EAN")
+            
+            total_ean = len(st.session_state.ean_logs)
+            successful = len([log for log in st.session_state.ean_logs if log.get('status') == 'success'])
+            failed = len([log for log in st.session_state.ean_logs if log.get('status') == 'failed'])
+            no_results = len([log for log in st.session_state.ean_logs if log.get('status') == 'no_results'])
+            
+            total_scraped = sum(log.get('successful_scrapes', 0) for log in st.session_state.ean_logs)
+            total_failed_scrapes = sum(log.get('failed_scrapes', 0) for log in st.session_state.ean_logs)
+            total_chars = sum(log.get('total_characters', 0) for log in st.session_state.ean_logs)
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🔍 EAN Processati", total_ean)
+            with col2:
+                st.metric("✅ Successi", successful)
+            with col3:
+                st.metric("📄 Pagine Estratte", total_scraped)
+            with col4:
+                st.metric("📊 Caratteri Totali", f"{total_chars:,}")
+            
+            # Log dettagliato EAN
+            with st.expander("📋 Log Dettagliato Ricerche EAN", expanded=False):
+                for i, log in enumerate(st.session_state.ean_logs):
+                    st.markdown(f"### {i+1}. EAN: `{log['ean']}` - Prodotto: `{log['product_code']}`")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        status_emoji = {
+                            'success': '✅',
+                            'failed': '❌',
+                            'no_results': '⚠️'
+                        }
+                        st.write(f"**Status:** {status_emoji.get(log.get('status', ''), '❓')} {log.get('status', 'unknown')}")
+                    with col2:
+                        st.write(f"**URL Trovati:** {len(log.get('search_results', []))}")
+                    with col3:
+                        st.write(f"**Scraping Riusciti:** {log.get('successful_scrapes', 0)}/{log.get('successful_scrapes', 0) + log.get('failed_scrapes', 0)}")
+                    
+                    st.write(f"**Caratteri Estratti:** {log.get('total_characters', 0):,}")
+                    st.write(f"**Timestamp:** {log.get('timestamp', 'N/A')}")
+                    
+                    # Mostra URL e risultati scraping
+                    if log.get('scraped_data'):
+                        st.markdown("**Dettagli Scraping:**")
+                        for scrape in log['scraped_data']:
+                            icon = "✅" if scrape['success'] else "❌"
+                            st.markdown(f"{icon} **{scrape['position']}.** [{scrape['url']}]({scrape['url']})")
+                            if scrape['success']:
+                                st.caption(f"└─ Estratti {scrape['characters_extracted']} caratteri")
+                                if scrape.get('preview'):
+                                    with st.expander("👁️ Preview contenuto", expanded=False):
+                                        st.text(scrape['preview'])
+                    
+                    st.markdown("---")
+        
+        # Statistiche finali prodotti
+        st.subheader("📊 Statistiche Prodotti")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("✅ Prodotti elaborati", len(st.session_state.results))
+        with col2:
+            valid_titles = [r for r in st.session_state.results if r.get('titolo') and r.get('titolo') != 'ERRORE - NON GENERATO']
+            avg_title_len = sum(len(str(r.get('titolo', ''))) for r in valid_titles) / len(valid_titles) if valid_titles else 0
+            st.metric("📏 Lunghezza media titolo", f"{avg_title_len:.0f} caratteri")
+        with col3:
+            valid_descs = [r for r in st.session_state.results if r.get('description')]
+            avg_desc_len = sum(len(str(r.get('description', ''))) for r in valid_descs) / len(valid_descs) if valid_descs else 0
+            st.metric("📝 Lunghezza media descrizione", f"{avg_desc_len:.0f} caratteri")
+        with col4:
+            success_count = len([r for r in st.session_state.results if not r.get('errore')])
+            success_rate = (success_count / len(st.session_state.results)) * 100 if st.session_state.results else 0
+            st.metric("📊 Tasso successo", f"{success_rate:.1f}%")
     
     # Footer
     st.markdown("---")
