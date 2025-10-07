@@ -76,15 +76,26 @@ class ProductCardGenerator:
         images_dict = {}
         supported_formats = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
         
+        total_files = 0
+        skipped_files = 0
+        invalid_images = 0
+        
         try:
             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                 file_list = zip_ref.namelist()
                 
-                st.info(f"📦 Trovati {len(file_list)} file nello ZIP")
-                
                 for file_name in file_list:
-                    # Salta cartelle e file nascosti
-                    if file_name.endswith('/') or file_name.startswith('__MACOSX') or '/.DS_Store' in file_name:
+                    total_files += 1
+                    
+                    # Salta cartelle e file nascosti/sistema
+                    if (file_name.endswith('/') or 
+                        file_name.startswith('__MACOSX') or 
+                        '/__MACOSX' in file_name or
+                        file_name.startswith('.') or
+                        '/.DS_Store' in file_name or
+                        file_name.endswith('.DS_Store') or
+                        '._' in file_name):
+                        skipped_files += 1
                         continue
                     
                     # Estrai estensione
@@ -93,6 +104,7 @@ class ProductCardGenerator:
                     # Verifica se è un'immagine supportata
                     if file_ext in supported_formats:
                         # Estrai il nome del file senza estensione (= codice prodotto)
+                        # Gestisce anche percorsi con cartelle (es: "immagini/PROD123.jpg")
                         product_code = Path(file_name).stem
                         
                         # Leggi l'immagine
@@ -107,15 +119,29 @@ class ProductCardGenerator:
                             images_dict[product_code] = image_data
                             
                         except Exception as e:
+                            invalid_images += 1
                             st.warning(f"⚠️ File {file_name} non è un'immagine valida: {e}")
                             continue
+                    else:
+                        skipped_files += 1
                 
                 self.product_images = images_dict
-                st.success(f"✅ Caricate {len(images_dict)} immagini valide")
+                
+                # Messaggio dettagliato
+                st.success(f"✅ Caricate **{len(images_dict)}** immagini valide")
+                st.caption(f"📦 File totali nello ZIP: {total_files} | ✅ Immagini valide: {len(images_dict)} | ⏭️ File ignorati: {skipped_files} | ❌ Immagini invalide: {invalid_images}")
                 
                 # Mostra preview
                 if images_dict:
                     with st.expander("👀 Preview Immagini Caricate", expanded=False):
+                        # Mostra info dettagliate
+                        st.markdown(f"**Codici prodotto trovati:** {', '.join(list(images_dict.keys())[:10])}")
+                        if len(images_dict) > 10:
+                            st.caption(f"... e altri {len(images_dict) - 10} codici")
+                        
+                        st.markdown("---")
+                        
+                        # Preview immagini
                         cols = st.columns(5)
                         for i, (code, img_data) in enumerate(list(images_dict.items())[:10]):
                             with cols[i % 5]:
@@ -996,37 +1022,6 @@ def main():
                         
                         st.markdown("---")
                 
-                # Trova colonna codice prodotto prima di usarla
-                code_column = None
-                for csv_col, var_name in column_mapping.items():
-                    if any(keyword in var_name.lower() for keyword in ['codice', 'code', 'id', 'sku']):
-                        code_column = csv_col
-                        break
-                
-                # Feature EAN
-                if serper_key and ean_column:
-                    st.info(f"🔍 **Feature EAN attivata!** Colonna EAN mappata: `{ean_column}`")
-                    st.caption("Per ogni prodotto verrà effettuata una ricerca Google dell'EAN per arricchire i contenuti")
-                
-                # Feature Immagini
-                if st.session_state.use_image_analysis and st.session_state.images_loaded:
-                    st.info(f"🖼️ **Analisi immagini attivata!** {len(generator.product_images)} immagini caricate")
-                    
-                    # Verifica corrispondenze
-                    if code_column:
-                        product_codes = set(csv_data[code_column].astype(str))
-                        image_codes = set(generator.product_images.keys())
-                        matches = product_codes & image_codes
-                        
-                        if matches:
-                            match_pct = (len(matches) / len(product_codes)) * 100
-                            st.success(f"✅ {len(matches)} immagini corrispondono ai prodotti ({match_pct:.1f}%)")
-                        else:
-                            st.warning("⚠️ Nessuna corrispondenza trovata tra codici prodotto e nomi immagini")
-                            st.caption("Verifica che i nomi delle immagini corrispondano ai codici prodotto nel CSV")
-                    else:
-                        st.warning("⚠️ Mappa una colonna come 'codice_prodotto' per verificare le corrispondenze")
-                
                 # Mostra mappatura finale
                 if column_mapping:
                     st.subheader("📋 Mappatura Finale")
@@ -1035,6 +1030,87 @@ def main():
                         for k, v in column_mapping.items()
                     ])
                     st.dataframe(mapping_df, use_container_width=True)
+                    
+                    # Trova e mostra colonna codice identificata
+                    code_column_identified = None
+                    for csv_col, var_name in column_mapping.items():
+                        if any(keyword in var_name.lower() for keyword in ['codice', 'code', 'id', 'sku']):
+                            code_column_identified = csv_col
+                            break
+                    
+                    if code_column_identified:
+                        st.info(f"🔑 **Colonna Codice Identificata:** `{code_column_identified}` → `{column_mapping[code_column_identified]}`")
+                    else:
+                        st.warning("⚠️ Nessuna colonna codice identificata. Mappa una colonna con 'codice', 'code', 'id' o 'sku'")
+                
+                # Verifica corrispondenze immagini (sempre alla fine)
+                if st.session_state.use_image_analysis and st.session_state.images_loaded and column_mapping:
+                    st.markdown("---")
+                    
+                    # Ri-trova code_column per sicurezza
+                    final_code_column = None
+                    for csv_col, var_name in column_mapping.items():
+                        if any(keyword in var_name.lower() for keyword in ['codice', 'code', 'id', 'sku']):
+                            final_code_column = csv_col
+                            break
+                    
+                    if final_code_column:
+                        st.subheader("🖼️ Verifica Corrispondenze Immagini")
+                        
+                        product_codes = set(csv_data[final_code_column].astype(str))
+                        image_codes = set(generator.product_images.keys())
+                        matches = product_codes & image_codes
+                        missing_images = product_codes - image_codes
+                        extra_images = image_codes - product_codes
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("📦 Prodotti CSV", len(product_codes))
+                        with col2:
+                            st.metric("🖼️ Immagini ZIP", len(image_codes))
+                        with col3:
+                            if matches:
+                                match_pct = (len(matches) / len(product_codes)) * 100
+                                st.metric("✅ Corrispondenze", f"{len(matches)} ({match_pct:.1f}%)")
+                            else:
+                                st.metric("✅ Corrispondenze", "0 (0%)")
+                        
+                        if matches:
+                            st.success(f"✅ {len(matches)} immagini corrispondono ai prodotti!")
+                            with st.expander("👀 Codici con Immagine", expanded=False):
+                                st.write(", ".join(sorted(list(matches))[:20]))
+                                if len(matches) > 20:
+                                    st.caption(f"... e altri {len(matches) - 20}")
+                        
+                        if missing_images:
+                            st.warning(f"⚠️ {len(missing_images)} prodotti senza immagine")
+                            with st.expander("📋 Prodotti Senza Immagine", expanded=False):
+                                st.write(", ".join(sorted(list(missing_images))[:20]))
+                                if len(missing_images) > 20:
+                                    st.caption(f"... e altri {len(missing_images) - 20}")
+                        
+                        if extra_images:
+                            st.info(f"ℹ️ {len(extra_images)} immagini senza prodotto corrispondente")
+                            with st.expander("🖼️ Immagini Extra", expanded=False):
+                                st.write(", ".join(sorted(list(extra_images))[:20]))
+                                if len(extra_images) > 20:
+                                    st.caption(f"... e altri {len(extra_images) - 20}")
+                        
+                        if not matches:
+                            st.error("❌ Nessuna corrispondenza trovata!")
+                            st.markdown("""
+                            **Possibili cause:**
+                            - I nomi delle immagini non corrispondono ai codici prodotto
+                            - Verifica che i nomi file siano esattamente uguali ai codici (es: `SKU123.jpg` per codice `SKU123`)
+                            - Controlla maiuscole/minuscole
+                            """)
+                            
+                            # Mostra alcuni esempi per debug
+                            st.markdown("**Debug Info:**")
+                            st.caption(f"Primi 5 codici CSV: {list(product_codes)[:5]}")
+                            st.caption(f"Primi 5 nomi immagini: {list(image_codes)[:5]}")
+                    else:
+                        st.warning("⚠️ Mappa una colonna come 'codice_prodotto' per verificare le corrispondenze")
                 
             except Exception as e:
                 st.error(f"❌ Errore caricamento CSV: {e}")
