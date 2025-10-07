@@ -256,17 +256,25 @@ Sii specifico e dettagliato. Rispondi in italiano."""
     
     def analyze_product_image(self, product_code: str) -> Tuple[Optional[bytes], str]:
         """Analizza l'immagine del prodotto se disponibile"""
-        if product_code not in self.product_images:
-            return None, ""
+        # Normalizza il codice prodotto (rimuovi apici, spazi, converti a stringa)
+        normalized_code = str(product_code).strip().strip("'").strip('"')
         
-        image_data = self.product_images[product_code]
+        # Cerca con codice normalizzato
+        if normalized_code not in self.product_images:
+            # Prova anche senza normalizzazione (fallback)
+            if str(product_code) not in self.product_images:
+                return None, ""
+            else:
+                normalized_code = str(product_code)
         
-        st.info(f"🖼️ Analisi immagine per prodotto: {product_code}")
+        image_data = self.product_images[normalized_code]
+        
+        st.info(f"🖼️ Analisi immagine per prodotto: {normalized_code}")
         
         # Mostra l'immagine
         col1, col2 = st.columns([1, 2])
         with col1:
-            st.image(image_data, caption=f"Prodotto: {product_code}", use_container_width=True)
+            st.image(image_data, caption=f"Prodotto: {normalized_code}", use_container_width=True)
         
         # Analizza con AI appropriata
         with col2:
@@ -680,7 +688,14 @@ def process_batch(generator, batch_data, site_info, column_mapping, additional_i
     
     for i, (_, row) in enumerate(batch_data.iterrows()):
         current_index = start_index + i
-        product_code = row[code_column] if code_column else f"PROD_{current_index+1}"
+        
+        # Estrai e normalizza il codice prodotto
+        if code_column:
+            raw_code = row[code_column]
+            # Normalizza: rimuovi apici, spazi, converti a stringa
+            product_code = str(raw_code).strip().strip("'").strip('"')
+        else:
+            product_code = f"PROD_{current_index+1}"
         
         # Genera contenuto
         generated_content = generator.generate_product_content(
@@ -1057,7 +1072,8 @@ def main():
                     if final_code_column:
                         st.subheader("🖼️ Verifica Corrispondenze Immagini")
                         
-                        product_codes = set(csv_data[final_code_column].astype(str))
+                        # Normalizza i codici dal CSV (rimuovi apici)
+                        product_codes = set(str(code).strip().strip("'").strip('"') for code in csv_data[final_code_column])
                         image_codes = set(generator.product_images.keys())
                         matches = product_codes & image_codes
                         missing_images = product_codes - image_codes
@@ -1107,8 +1123,12 @@ def main():
                             
                             # Mostra alcuni esempi per debug
                             st.markdown("**Debug Info:**")
-                            st.caption(f"Primi 5 codici CSV: {list(product_codes)[:5]}")
+                            st.caption(f"Primi 5 codici CSV (normalizzati): {list(product_codes)[:5]}")
                             st.caption(f"Primi 5 nomi immagini: {list(image_codes)[:5]}")
+                            
+                            # Mostra anche i codici originali per confronto
+                            original_codes = [str(code) for code in csv_data[final_code_column].head(5)]
+                            st.caption(f"Primi 5 codici CSV (originali): {original_codes}")
                     else:
                         st.warning("⚠️ Mappa una colonna come 'codice_prodotto' per verificare le corrispondenze")
                 
