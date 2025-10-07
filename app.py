@@ -255,43 +255,83 @@ Sii specifico e dettagliato. Rispondi in italiano."""
             return ""
     
     def analyze_product_image(self, product_code: str) -> Tuple[Optional[bytes], str]:
-        """Analizza l'immagine del prodotto se disponibile"""
-        # Normalizza il codice prodotto (rimuovi apici, spazi, converti a stringa)
+        """Analizza l'immagine del prodotto se disponibile - USA IL DATABASE PRE-ANALIZZATO"""
+        # Normalizza il codice prodotto
         normalized_code = str(product_code).strip().strip("'").strip('"')
         
-        # Cerca con codice normalizzato
-        if normalized_code not in self.product_images:
-            # Prova anche senza normalizzazione (fallback)
-            if str(product_code) not in self.product_images:
-                return None, ""
-            else:
-                normalized_code = str(product_code)
+        # Cerca nel database delle analisi pre-fatte
+        if normalized_code in st.session_state.image_analysis_db:
+            analysis = st.session_state.image_analysis_db[normalized_code]
+            st.info(f"🖼️ Usando analisi pre-calcolata per: {normalized_code}")
+            return None, analysis
         
-        image_data = self.product_images[normalized_code]
+        return None, ""
+    
+    def pre_analyze_all_images(self, product_codes: List[str]) -> Dict[str, str]:
+        """Pre-analizza tutte le immagini e crea un database di descrizioni"""
+        analysis_db = {}
         
-        st.info(f"🖼️ Analisi immagine per prodotto: {normalized_code}")
+        # Filtra solo i codici che hanno immagini
+        codes_with_images = [code for code in product_codes if code in self.product_images]
         
-        # Mostra l'immagine
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.image(image_data, caption=f"Prodotto: {normalized_code}", use_container_width=True)
+        if not codes_with_images:
+            st.warning("⚠️ Nessuna immagine da analizzare")
+            return {}
         
-        # Analizza con AI appropriata
-        with col2:
-            with st.spinner("🤖 Analisi AI in corso..."):
-                if self.ai_provider == "OpenAI":
-                    analysis = self.analyze_image_with_openai(image_data)
-                elif self.ai_provider == "Claude":
-                    analysis = self.analyze_image_with_claude(image_data)
-                else:
-                    analysis = ""
+        st.info(f"🔄 Pre-analisi di {len(codes_with_images)} immagini...")
+        
+        # Progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Container per mostrare le analisi in tempo reale
+        analysis_container = st.container()
+        
+        for i, code in enumerate(codes_with_images):
+            status_text.text(f"Analizzando immagine {i+1}/{len(codes_with_images)}: {code}")
+            
+            image_data = self.product_images[code]
+            
+            with analysis_container:
+                col1, col2 = st.columns([1, 2])
                 
-                if analysis:
-                    st.success("✅ Analisi completata!")
-                    with st.expander("👁️ Analisi AI dell'immagine", expanded=False):
-                        st.write(analysis)
+                with col1:
+                    st.image(image_data, caption=code, use_container_width=True)
+                
+                with col2:
+                    with st.spinner(f"🤖 Analisi AI per {code}..."):
+                        if self.ai_provider == "OpenAI":
+                            analysis = self.analyze_image_with_openai(image_data)
+                        elif self.ai_provider == "Claude":
+                            analysis = self.analyze_image_with_claude(image_data)
+                        else:
+                            analysis = ""
+                        
+                        if analysis:
+                            st.success(f"✅ Analisi completata per {code}")
+                            with st.expander(f"📝 Analisi {code}", expanded=False):
+                                st.write(analysis)
+                            analysis_db[code] = analysis
+                        else:
+                            st.warning(f"⚠️ Analisi fallita per {code}")
+                            analysis_db[code] = ""
+            
+            # Update progress
+            progress_bar.progress((i + 1) / len(codes_with_images))
+            
+            # Rate limiting
+            time.sleep(1)
         
-        return image_data, analysis
+        progress_bar.empty()
+        status_text.empty()
+        
+        st.success(f"✅ Pre-analisi completata! {len(analysis_db)} immagini analizzate.")
+        
+        # Salva nel session state
+        st.session_state.image_analysis_db = analysis_db
+        st.session_state.images_analyzed = True
+        
+        return analysis_db
     
     def search_ean_on_google(self, ean: str, num_results: int = 5) -> List[str]:
         """Cerca EAN su Google e restituisce gli URL dei risultati"""
@@ -657,6 +697,10 @@ def initialize_session_state():
         st.session_state.use_image_analysis = False
     if 'images_loaded' not in st.session_state:
         st.session_state.images_loaded = False
+    if 'image_analysis_db' not in st.session_state:
+        st.session_state.image_analysis_db = {}  # Database delle analisi immagini
+    if 'images_analyzed' not in st.session_state:
+        st.session_state.images_analyzed = False
 
 def reset_processing_state():
     """Reset dello stato di elaborazione"""
@@ -666,6 +710,7 @@ def reset_processing_state():
     st.session_state.total_products = 0
     st.session_state.processing_session_id = None
     st.session_state.ean_logs = []
+    # NON resettare image_analysis_db e images_analyzed per mantenerli tra le elaborazioni
 
 def save_checkpoint(results: List[Dict], session_id: str):
     """Salva un checkpoint dei risultati"""
@@ -1121,14 +1166,59 @@ def main():
                             - Controlla maiuscole/minuscole
                             """)
                             
-                            # Mostra alcuni esempi per debug
-                            st.markdown("**Debug Info:**")
-                            st.caption(f"Primi 5 codici CSV (normalizzati): {list(product_codes)[:5]}")
-                            st.caption(f"Primi 5 nomi immagini: {list(image_codes)[:5]}")
-                            
                             # Mostra anche i codici originali per confronto
                             original_codes = [str(code) for code in csv_data[final_code_column].head(5)]
                             st.caption(f"Primi 5 codici CSV (originali): {original_codes}")
+                        
+                        # Pulsante per pre-analizzare le immagini
+                        if matches and not st.session_state.images_analyzed:
+                            st.markdown("---")
+                            st.subheader("🎨 Pre-Analisi Immagini")
+                            st.info("""
+                            💡 **Importante:** Le immagini verranno pre-analizzate PRIMA dell'elaborazione.
+                            Questo crea un database di descrizioni che rimane disponibile durante tutta la generazione.
+                            """)
+                            
+                            col1, col2 = st.columns([1, 1])
+                            with col1:
+                                if st.button("🚀 Avvia Pre-Analisi Immagini", type="primary", use_container_width=True):
+                                    # Normalizza i codici con match
+                                    normalized_matches = [str(code).strip().strip("'").strip('"') for code in matches]
+                                    generator.pre_analyze_all_images(normalized_matches)
+                            with col2:
+                                st.metric("Immagini da analizzare", len(matches))
+                        
+                        elif st.session_state.images_analyzed:
+                            st.markdown("---")
+                            st.success("✅ **Pre-analisi completata!**")
+                            st.info(f"📊 Database analisi: {len(st.session_state.image_analysis_db)} descrizioni disponibili")
+                            
+                            # Mostra preview database
+                            with st.expander("👀 Preview Database Analisi", expanded=False):
+                                for code, analysis in list(st.session_state.image_analysis_db.items())[:3]:
+                                    st.markdown(f"**{code}:**")
+                                    st.caption(analysis[:200] + "...")
+                                    st.markdown("---")
+                                
+                                if len(st.session_state.image_analysis_db) > 3:
+                                    st.caption(f"... e altre {len(st.session_state.image_analysis_db) - 3} analisi")
+                            
+                            # Download database analisi
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                json_db = json.dumps(st.session_state.image_analysis_db, indent=2, ensure_ascii=False)
+                                st.download_button(
+                                    label="📥 Scarica Database Analisi (JSON)",
+                                    data=json_db,
+                                    file_name=f"image_analysis_db_{int(time.time())}.json",
+                                    mime="application/json",
+                                    use_container_width=True
+                                )
+                            with col2:
+                                if st.button("🔄 Ri-analizza Immagini", use_container_width=True):
+                                    st.session_state.images_analyzed = False
+                                    st.session_state.image_analysis_db = {}
+                                    st.rerun()
                     else:
                         st.warning("⚠️ Mappa una colonna come 'codice_prodotto' per verificare le corrispondenze")
                 
