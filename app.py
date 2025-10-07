@@ -4,12 +4,16 @@ import openai
 import anthropic
 import json
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import io
 import requests
 from bs4 import BeautifulSoup
 import re
 from datetime import datetime
+import zipfile
+import base64
+from pathlib import Path
+from PIL import Image
 
 # Configurazione pagina
 st.set_page_config(
@@ -26,6 +30,7 @@ class ProductCardGenerator:
         self.serper_api_key = None
         self.ai_provider = None
         self.model = None
+        self.product_images = {}  # Dizionario per memorizzare le immagini
         
     def setup_ai(self, provider: str, api_key: str, model: str) -> bool:
         """Configura il client AI (OpenAI o Claude)"""
@@ -65,6 +70,194 @@ class ProductCardGenerator:
         except Exception as e:
             st.error(f"❌ Errore configurazione Serper: {e}")
             return False
+    
+    def load_images_from_zip(self, zip_file) -> Dict[str, bytes]:
+        """Carica immagini da file ZIP e le associa ai codici prodotto"""
+        images_dict = {}
+        supported_formats = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+        
+        try:
+            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                file_list = zip_ref.namelist()
+                
+                st.info(f"📦 Trovati {len(file_list)} file nello ZIP")
+                
+                for file_name in file_list:
+                    # Salta cartelle e file nascosti
+                    if file_name.endswith('/') or file_name.startswith('__MACOSX') or '/.DS_Store' in file_name:
+                        continue
+                    
+                    # Estrai estensione
+                    file_ext = Path(file_name).suffix.lower()
+                    
+                    # Verifica se è un'immagine supportata
+                    if file_ext in supported_formats:
+                        # Estrai il nome del file senza estensione (= codice prodotto)
+                        product_code = Path(file_name).stem
+                        
+                        # Leggi l'immagine
+                        image_data = zip_ref.read(file_name)
+                        
+                        # Verifica che sia un'immagine valida
+                        try:
+                            img = Image.open(io.BytesIO(image_data))
+                            img.verify()  # Verifica integrità
+                            
+                            # Salva immagine nel dizionario
+                            images_dict[product_code] = image_data
+                            
+                        except Exception as e:
+                            st.warning(f"⚠️ File {file_name} non è un'immagine valida: {e}")
+                            continue
+                
+                self.product_images = images_dict
+                st.success(f"✅ Caricate {len(images_dict)} immagini valide")
+                
+                # Mostra preview
+                if images_dict:
+                    with st.expander("👀 Preview Immagini Caricate", expanded=False):
+                        cols = st.columns(5)
+                        for i, (code, img_data) in enumerate(list(images_dict.items())[:10]):
+                            with cols[i % 5]:
+                                st.image(img_data, caption=code, use_container_width=True)
+                        
+                        if len(images_dict) > 10:
+                            st.caption(f"... e altre {len(images_dict) - 10} immagini")
+                
+                return images_dict
+                
+        except Exception as e:
+            st.error(f"❌ Errore nel caricamento dello ZIP: {e}")
+            return {}
+    
+    def encode_image_to_base64(self, image_data: bytes) -> str:
+        """Converte immagine in base64 per API"""
+        return base64.b64encode(image_data).decode('utf-8')
+    
+    def analyze_image_with_openai(self, image_data: bytes) -> str:
+        """Analizza immagine con GPT-4 Vision"""
+        try:
+            base64_image = self.encode_image_to_base64(image_data)
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",  # Usa sempre gpt-4o per la visione
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": """Analizza questa immagine prodotto in modo dettagliato. Descrivi:
+1. Tipo di prodotto e categoria
+2. Caratteristiche visibili (colori, materiali, dimensioni apparenti)
+3. Design e stile
+4. Dettagli distintivi o particolari
+5. Contesto d'uso suggerito
+6. Qualità percepita
+
+Sii specifico e dettagliato. Rispondi in italiano."""
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=500
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            st.warning(f"⚠️ Errore analisi immagine OpenAI: {e}")
+            return ""
+    
+    def analyze_image_with_claude(self, image_data: bytes) -> str:
+        """Analizza immagine con Claude Vision"""
+        try:
+            base64_image = self.encode_image_to_base64(image_data)
+            
+            # Determina il media_type dall'immagine
+            img = Image.open(io.BytesIO(image_data))
+            format_map = {
+                'JPEG': 'image/jpeg',
+                'PNG': 'image/png',
+                'WEBP': 'image/webp',
+                'GIF': 'image/gif'
+            }
+            media_type = format_map.get(img.format, 'image/jpeg')
+            
+            response = self.anthropic_client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": base64_image
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": """Analizza questa immagine prodotto in modo dettagliato. Descrivi:
+1. Tipo di prodotto e categoria
+2. Caratteristiche visibili (colori, materiali, dimensioni apparenti)
+3. Design e stile
+4. Dettagli distintivi o particolari
+5. Contesto d'uso suggerito
+6. Qualità percepita
+
+Sii specifico e dettagliato. Rispondi in italiano."""
+                            }
+                        ]
+                    }
+                ],
+            )
+            
+            return response.content[0].text
+            
+        except Exception as e:
+            st.warning(f"⚠️ Errore analisi immagine Claude: {e}")
+            return ""
+    
+    def analyze_product_image(self, product_code: str) -> Tuple[Optional[bytes], str]:
+        """Analizza l'immagine del prodotto se disponibile"""
+        if product_code not in self.product_images:
+            return None, ""
+        
+        image_data = self.product_images[product_code]
+        
+        st.info(f"🖼️ Analisi immagine per prodotto: {product_code}")
+        
+        # Mostra l'immagine
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.image(image_data, caption=f"Prodotto: {product_code}", use_container_width=True)
+        
+        # Analizza con AI appropriata
+        with col2:
+            with st.spinner("🤖 Analisi AI in corso..."):
+                if self.ai_provider == "OpenAI":
+                    analysis = self.analyze_image_with_openai(image_data)
+                elif self.ai_provider == "Claude":
+                    analysis = self.analyze_image_with_claude(image_data)
+                else:
+                    analysis = ""
+                
+                if analysis:
+                    st.success("✅ Analisi completata!")
+                    with st.expander("👁️ Analisi AI dell'immagine", expanded=False):
+                        st.write(analysis)
+        
+        return image_data, analysis
     
     def search_ean_on_google(self, ean: str, num_results: int = 5) -> List[str]:
         """Cerca EAN su Google e restituisce gli URL dei risultati"""
@@ -217,7 +410,7 @@ class ProductCardGenerator:
     
     def create_prompt(self, product_data: Dict, site_info: Dict, column_mapping: Dict, 
                      additional_instructions: str, fields_to_generate: List[str], 
-                     ean_context: str = "") -> str:
+                     ean_context: str = "", image_analysis: str = "") -> str:
         """Crea il prompt per l'AI basato sui dati del prodotto"""
         
         # Costruisce le informazioni del prodotto
@@ -235,6 +428,20 @@ class ProductCardGenerator:
             ean_section = f"""
 INFORMAZIONI DA RICERCA EAN (Usa queste info per arricchire il contenuto):
 {ean_context[:3000]}  # Limita a 3000 caratteri
+"""
+        
+        # Aggiungi analisi immagine se disponibile
+        image_section = ""
+        if image_analysis:
+            image_section = f"""
+ANALISI VISIVA DEL PRODOTTO (Informazioni estratte dall'immagine):
+{image_analysis}
+
+IMPORTANTE: Utilizza le informazioni visive per:
+- Arricchire le descrizioni con dettagli sul design e l'aspetto
+- Evidenziare caratteristiche estetiche uniche
+- Descrivere colori, materiali e finiture con precisione
+- Suggerire il contesto d'uso appropriato
 """
         
         # Genera istruzioni per i campi richiesti
@@ -281,6 +488,7 @@ INFORMAZIONI SITO:
 DATI PRODOTTO:
 {product_info_str}
 {ean_section}
+{image_section}
 
 ISTRUZIONI AGGIUNTIVE:
 {additional_instructions if additional_instructions else "Nessuna istruzione specifica"}
@@ -334,10 +542,15 @@ Importante: Rispondi SOLO con il JSON, senza testo aggiuntivo."""
     def generate_product_content(self, product_data: Dict, site_info: Dict, 
                                 column_mapping: Dict, additional_instructions: str,
                                 fields_to_generate: List[str], ean_column: str = None,
-                                product_code: str = None) -> Optional[Dict]:
+                                product_code: str = None, use_image_analysis: bool = False) -> Optional[Dict]:
         """Genera contenuti per un singolo prodotto con retry logic"""
         max_retries = 3
         retry_delay = 1
+        
+        # Gestione analisi immagine
+        image_analysis = ""
+        if use_image_analysis and product_code:
+            image_data, image_analysis = self.analyze_product_image(product_code)
         
         # Gestione EAN context
         ean_context = ""
@@ -349,7 +562,8 @@ Importante: Rispondi SOLO con il JSON, senza testo aggiuntivo."""
         for attempt in range(max_retries):
             try:
                 prompt = self.create_prompt(product_data, site_info, column_mapping, 
-                                          additional_instructions, fields_to_generate, ean_context)
+                                          additional_instructions, fields_to_generate, 
+                                          ean_context, image_analysis)
                 
                 # Genera con provider selezionato
                 if self.ai_provider == "OpenAI":
@@ -405,6 +619,10 @@ def initialize_session_state():
         st.session_state.fields_to_generate = ["Titolo Prodotto", "Description", "Meta Title", "Meta Description"]
     if 'ean_logs' not in st.session_state:
         st.session_state.ean_logs = []
+    if 'use_image_analysis' not in st.session_state:
+        st.session_state.use_image_analysis = False
+    if 'images_loaded' not in st.session_state:
+        st.session_state.images_loaded = False
 
 def reset_processing_state():
     """Reset dello stato di elaborazione"""
@@ -430,7 +648,7 @@ def load_checkpoint():
     return st.session_state.get('checkpoint_data', None)
 
 def process_batch(generator, batch_data, site_info, column_mapping, additional_instructions, 
-                 code_column, start_index, fields_to_generate, ean_column):
+                 code_column, start_index, fields_to_generate, ean_column, use_image_analysis):
     """Elabora un batch di prodotti"""
     batch_results = []
     
@@ -441,7 +659,7 @@ def process_batch(generator, batch_data, site_info, column_mapping, additional_i
         # Genera contenuto
         generated_content = generator.generate_product_content(
             row.to_dict(), site_info, column_mapping, additional_instructions,
-            fields_to_generate, ean_column, product_code
+            fields_to_generate, ean_column, product_code, use_image_analysis
         )
         
         if generated_content:
@@ -620,6 +838,36 @@ def main():
             "Istruzioni specifiche (opzionale):",
             placeholder="Esempi:\n- Usa emoji\n- Includi materiale nel titolo\n- Max 60 caratteri per titolo"
         )
+        
+        st.markdown("---")
+        
+        # Feature Analisi Immagini
+        st.subheader("🖼️ Analisi Immagini (Opzionale)")
+        st.markdown("Carica un file ZIP con immagini prodotto per arricchire i contenuti")
+        
+        use_images = st.checkbox(
+            "Attiva analisi immagini",
+            value=st.session_state.use_image_analysis,
+            help="Le immagini devono avere come nome il codice prodotto",
+            disabled=(st.session_state.processing_status == 'processing')
+        )
+        st.session_state.use_image_analysis = use_images
+        
+        if use_images:
+            images_zip = st.file_uploader(
+                "Carica ZIP con immagini prodotti",
+                type=['zip'],
+                help="Formato: codice_prodotto.jpg/png/webp",
+                disabled=(st.session_state.processing_status == 'processing')
+            )
+            
+            if images_zip and not st.session_state.images_loaded:
+                with st.spinner("📦 Caricamento immagini..."):
+                    images_dict = generator.load_images_from_zip(images_zip)
+                    if images_dict:
+                        st.session_state.images_loaded = True
+                        st.info(f"🎨 **Formati supportati:** JPG, PNG, WEBP, GIF, BMP")
+                        st.info(f"📝 **Nota:** Le immagini verranno analizzate automaticamente durante la generazione")
     
     # Mostra stato elaborazione se in corso
     if st.session_state.processing_status != 'idle':
@@ -753,6 +1001,23 @@ def main():
                     st.info(f"🔍 **Feature EAN attivata!** Colonna EAN mappata: `{ean_column}`")
                     st.caption("Per ogni prodotto verrà effettuata una ricerca Google dell'EAN per arricchire i contenuti")
                 
+                # Feature Immagini
+                if st.session_state.use_image_analysis and st.session_state.images_loaded:
+                    st.info(f"🖼️ **Analisi immagini attivata!** {len(generator.product_images)} immagini caricate")
+                    
+                    # Verifica corrispondenze
+                    if 'csv_data' in locals() and code_column:
+                        product_codes = set(csv_data[code_column].astype(str))
+                        image_codes = set(generator.product_images.keys())
+                        matches = product_codes & image_codes
+                        
+                        if matches:
+                            match_pct = (len(matches) / len(product_codes)) * 100
+                            st.success(f"✅ {len(matches)} immagini corrispondono ai prodotti ({match_pct:.1f}%)")
+                        else:
+                            st.warning("⚠️ Nessuna corrispondenza trovata tra codici prodotto e nomi immagini")
+                            st.caption("Verifica che i nomi delle immagini corrispondano ai codici prodotto nel CSV")
+                
                 # Mostra mappatura finale
                 if column_mapping:
                     st.subheader("📋 Mappatura Finale")
@@ -778,7 +1043,13 @@ def main():
             st.metric("📝 Campi da generare", len(selected_fields))
             
             # Stima tempo
-            estimated_time = len(csv_data) * (3 if serper_key and ean_column else 2)
+            base_time = 2  # tempo base per prodotto
+            if serper_key and ean_column:
+                base_time += 8  # +8 secondi per ricerca EAN
+            if st.session_state.use_image_analysis and st.session_state.images_loaded:
+                base_time += 3  # +3 secondi per analisi immagine
+            
+            estimated_time = len(csv_data) * base_time
             st.metric("⏱️ Tempo stimato", f"{estimated_time//60}m")
         
         st.markdown("---")
@@ -788,7 +1059,30 @@ def main():
         - 🔧 Modello: {selected_model_name}
         - 🔍 Serper: {'✅ Attivo' if serper_key else '❌ Non attivo'}
         - 📝 Campi: {len(selected_fields)}
+        - 🖼️ Immagini: {'✅ Attive' if st.session_state.use_image_analysis else '❌ Non attive'}
         """)
+        
+        # Statistiche immagini se caricate
+        if st.session_state.use_image_analysis and st.session_state.images_loaded:
+            st.markdown("---")
+            st.subheader("🖼️ Statistiche Immagini")
+            st.metric("📸 Immagini caricate", len(generator.product_images))
+            
+            # Mostra distribuzione formati
+            if generator.product_images:
+                formats = {}
+                for img_data in generator.product_images.values():
+                    try:
+                        img = Image.open(io.BytesIO(img_data))
+                        fmt = img.format
+                        formats[fmt] = formats.get(fmt, 0) + 1
+                    except:
+                        pass
+                
+                if formats:
+                    st.caption("**Formati:**")
+                    for fmt, count in formats.items():
+                        st.caption(f"- {fmt}: {count}")
         
         # Log EAN in tempo reale (durante elaborazione)
         if st.session_state.ean_logs and st.session_state.processing_status != 'idle':
@@ -865,7 +1159,8 @@ def main():
                 batch_results = process_batch(
                     generator, batch_data, site_info, column_mapping,
                     additional_instructions, code_column, start_idx,
-                    selected_fields, ean_column if serper_key else None
+                    selected_fields, ean_column if serper_key else None,
+                    st.session_state.use_image_analysis
                 )
                 
                 st.session_state.results.extend(batch_results)
@@ -1003,8 +1298,8 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666;'>
-        <p>SEO Product Card Generator v3.0 - Multi-AI con EAN Search<br>
-        Supporta OpenAI, Claude e ricerca automatica su Google<br>
+        <p>SEO Product Card Generator v3.0 - Multi-AI con EAN Search & Image Analysis<br>
+        Supporta OpenAI, Claude, ricerca automatica su Google e analisi visiva AI<br>
         Sviluppato da Daniele Pisciottano 🚀</p>
     </div>
     """, unsafe_allow_html=True)
