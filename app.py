@@ -996,6 +996,13 @@ def main():
                         
                         st.markdown("---")
                 
+                # Trova colonna codice prodotto prima di usarla
+                code_column = None
+                for csv_col, var_name in column_mapping.items():
+                    if any(keyword in var_name.lower() for keyword in ['codice', 'code', 'id', 'sku']):
+                        code_column = csv_col
+                        break
+                
                 # Feature EAN
                 if serper_key and ean_column:
                     st.info(f"🔍 **Feature EAN attivata!** Colonna EAN mappata: `{ean_column}`")
@@ -1006,7 +1013,7 @@ def main():
                     st.info(f"🖼️ **Analisi immagini attivata!** {len(generator.product_images)} immagini caricate")
                     
                     # Verifica corrispondenze
-                    if 'csv_data' in locals() and code_column:
+                    if code_column:
                         product_codes = set(csv_data[code_column].astype(str))
                         image_codes = set(generator.product_images.keys())
                         matches = product_codes & image_codes
@@ -1017,6 +1024,8 @@ def main():
                         else:
                             st.warning("⚠️ Nessuna corrispondenza trovata tra codici prodotto e nomi immagini")
                             st.caption("Verifica che i nomi delle immagini corrispondano ai codici prodotto nel CSV")
+                    else:
+                        st.warning("⚠️ Mappa una colonna come 'codice_prodotto' per verificare le corrispondenze")
                 
                 # Mostra mappatura finale
                 if column_mapping:
