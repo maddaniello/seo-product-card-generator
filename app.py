@@ -103,17 +103,27 @@ class ProductCardGenerator:
                     
                     # Verifica se è un'immagine supportata
                     if file_ext in supported_formats:
-                        # Estrai il nome del file senza estensione
+                        # Estrai il nome del file senza estensione (solo il nome base)
                         file_stem = Path(file_name).stem
                         
-                        # Estrai il codice prodotto base (rimuovi suffissi come _1, _2, ecc.)
-                        # Pattern: cerca tutto fino al primo underscore seguito da numero
-                        product_code = file_stem
-                        if '_' in file_stem:
-                            parts = file_stem.split('_')
+                        # **FIX CRITICO**: Normalizza il codice prodotto base
+                        # Rimuove apici, spazi e caratteri speciali
+                        product_code = file_stem.strip().strip("'").strip('"')
+                        
+                        # Gestione suffissi numerici o descrittivi (es: _1, _2, _front, _back)
+                        if '_' in product_code:
+                            parts = product_code.split('_')
                             last_part = parts[-1].lower()
-                            if parts[-1].isdigit() or last_part in ['front', 'back', 'side', 'top', 'bottom', 'fronte', 'retro', 'lato']:
+                            
+                            # Se l'ultima parte è un numero o una parola chiave, rimuovila
+                            if (parts[-1].isdigit() or 
+                                last_part in ['front', 'back', 'side', 'top', 'bottom', 
+                                             'fronte', 'retro', 'lato', 'sopra', 'sotto',
+                                             '1', '2', '3', '4', '5']):
                                 product_code = '_'.join(parts[:-1])
+                        
+                        # **NORMALIZZAZIONE FINALE**: Rimuovi di nuovo apici e spazi
+                        product_code = product_code.strip().strip("'").strip('"')
                         
                         # Leggi l'immagine
                         image_data = zip_ref.read(file_name)
@@ -143,6 +153,14 @@ class ProductCardGenerator:
                 # Messaggio dettagliato
                 st.success(f"✅ Caricate **{total_images}** immagini per **{len(images_dict)}** prodotti")
                 st.caption(f"📦 File totali: {total_files} | ✅ Immagini valide: {total_images} | ⏭️ File ignorati: {skipped_files} | ❌ Invalide: {invalid_images}")
+                
+                # **DEBUG**: Mostra i codici prodotto estratti dalle immagini
+                with st.expander("🔍 Debug: Codici Prodotto Estratti dalle Immagini", expanded=False):
+                    st.write("**Primi 20 codici estratti dalle immagini:**")
+                    for code in list(images_dict.keys())[:20]:
+                        st.code(f"'{code}'")
+                    if len(images_dict) > 20:
+                        st.caption(f"... e altri {len(images_dict) - 20} codici")
                 
                 # Statistiche immagini multiple
                 multiple_images = {code: len(imgs) for code, imgs in images_dict.items() if len(imgs) > 1}
@@ -1178,6 +1196,19 @@ def main():
                         # Normalizza i codici dal CSV (rimuovi apici)
                         product_codes = set(str(code).strip().strip("'").strip('"') for code in csv_data[final_code_column])
                         image_codes = set(generator.product_images.keys())
+                        
+                        # **DEBUG AGGIUNTO**: Mostra cosa viene confrontato
+                        with st.expander("🔍 Debug: Confronto Codici CSV vs ZIP", expanded=True):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Primi 10 codici CSV (normalizzati):**")
+                                for code in list(product_codes)[:10]:
+                                    st.code(f"'{code}'")
+                            with col2:
+                                st.write("**Primi 10 codici ZIP (estratti):**")
+                                for code in list(image_codes)[:10]:
+                                    st.code(f"'{code}'")
+                        
                         matches = product_codes & image_codes
                         missing_images = product_codes - image_codes
                         extra_images = image_codes - product_codes
