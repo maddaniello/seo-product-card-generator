@@ -109,7 +109,12 @@ class ProductCardGenerator:
                         # Estrai il codice prodotto base (rimuovi suffissi come _1, _2, ecc.)
                         # Pattern: cerca tutto fino al primo underscore seguito da numero
                         import re
-                        match = re.match(r'^(.+?)(?:_\d+)?
+                        product_code = file_stem
+                        if '_' in file_stem:
+                            parts = file_stem.split('_')
+                            last_part = parts[-1].lower()
+                            if parts[-1].isdigit() or last_part in ['front', 'back', 'side', 'top', 'bottom', 'fronte', 'retro', 'lato']:
+                                product_code = '_'.join(parts[:-1])
     
     def encode_image_to_base64(self, image_data: bytes) -> str:
         """Converte immagine in base64 per API"""
