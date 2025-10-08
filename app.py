@@ -30,7 +30,8 @@ class ProductCardGenerator:
         self.serper_api_key = None
         self.ai_provider = None
         self.model = None
-        self.product_images = {}  # Dizionario: codice_prodotto → lista di immagini
+        self.product_images = st.session_state.get('product_images_dict', {})
+
         
     def setup_ai(self, provider: str, api_key: str, model: str) -> bool:
         """Configura il client AI (OpenAI o Claude)"""
@@ -146,6 +147,9 @@ class ProductCardGenerator:
                         skipped_files += 1
                 
                 self.product_images = images_dict
+
+                # ✅ SALVA nel session_state per persistere tra i rerun
+                st.session_state.product_images_dict = images_dict
                 
                 # Conta il totale delle immagini
                 total_images = sum(len(imgs) for imgs in images_dict.values())
@@ -777,6 +781,9 @@ def initialize_session_state():
         st.session_state.image_analysis_db = {}  # Database delle analisi immagini
     if 'images_analyzed' not in st.session_state:
         st.session_state.images_analyzed = False
+    # ✅ AGGIUNTO: Salva il dizionario delle immagini
+    if 'product_images_dict' not in st.session_state:
+        st.session_state.product_images_dict = {}
 
 def reset_processing_state():
     """Reset dello stato di elaborazione"""
@@ -1030,6 +1037,7 @@ def main():
                         st.session_state.images_loaded = True
                         st.info(f"🎨 **Formati supportati:** JPG, PNG, WEBP, GIF, BMP")
                         st.info(f"📝 **Nota:** Le immagini verranno analizzate automaticamente durante la generazione")
+                        generator.product_images = images_dict
     
     # Mostra stato elaborazione se in corso
     if st.session_state.processing_status != 'idle':
