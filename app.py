@@ -14,6 +14,7 @@ import zipfile
 import base64
 from pathlib import Path
 from PIL import Image
+import urllib.request
 
 # Configurazione pagina
 st.set_page_config(
@@ -30,8 +31,8 @@ class ProductCardGenerator:
         self.serper_api_key = None
         self.ai_provider = None
         self.model = None
+        # ✅ CARICA dal session_state se disponibile
         self.product_images = st.session_state.get('product_images_dict', {})
-
         
     def setup_ai(self, provider: str, api_key: str, model: str) -> bool:
         """Configura il client AI (OpenAI o Claude)"""
@@ -147,7 +148,6 @@ class ProductCardGenerator:
                         skipped_files += 1
                 
                 self.product_images = images_dict
-
                 # ✅ SALVA nel session_state per persistere tra i rerun
                 st.session_state.product_images_dict = images_dict
                 
@@ -213,9 +213,14 @@ class ProductCardGenerator:
             # Testo personalizzato se ci sono più immagini
             if total_images > 1:
                 context_text = f"""Analizza questa immagine prodotto (immagine {image_index} di {total_images} per questo prodotto). 
+IMPORTANTE: Concentrati SOLO sul prodotto, IGNORA completamente eventuali persone/modelli presenti.
+
 Descrivi in modo dettagliato:"""
             else:
-                context_text = "Analizza questa immagine prodotto in modo dettagliato. Descrivi:"
+                context_text = """Analizza questa immagine prodotto in modo dettagliato.
+IMPORTANTE: Concentrati SOLO sul prodotto, IGNORA completamente eventuali persone/modelli presenti.
+
+Descrivi:"""
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",  # Usa sempre gpt-4o per la visione
@@ -226,13 +231,15 @@ Descrivi in modo dettagliato:"""
                             {
                                 "type": "text",
                                 "text": f"""{context_text}
-1. Tipo di prodotto e categoria
-2. Caratteristiche visibili (colori, materiali, dimensioni apparenti)
-3. Design e stile
-4. Dettagli distintivi o particolari
-5. Contesto d'uso suggerito
-6. Qualità percepita
+1. Tipo di prodotto e categoria (es: abbigliamento, accessorio, calzatura)
+2. Caratteristiche visibili del PRODOTTO (colori, materiali, texture, pattern)
+3. Design e stile del PRODOTTO
+4. Dettagli distintivi o particolari del PRODOTTO (cuciture, bottoni, zip, decorazioni)
+5. Forma, taglio e silhouette
+6. Contesto d'uso suggerito (casual, formale, sportivo, etc.)
+7. Qualità percepita dei materiali
 
+NON menzionare modelli, persone o manichini. Descrivi SOLO il prodotto.
 Sii specifico e dettagliato. Rispondi in italiano."""
                             },
                             {
@@ -271,9 +278,14 @@ Sii specifico e dettagliato. Rispondi in italiano."""
             # Testo personalizzato se ci sono più immagini
             if total_images > 1:
                 context_text = f"""Analizza questa immagine prodotto (immagine {image_index} di {total_images} per questo prodotto). 
+IMPORTANTE: Concentrati SOLO sul prodotto, IGNORA completamente eventuali persone/modelli presenti.
+
 Descrivi in modo dettagliato:"""
             else:
-                context_text = "Analizza questa immagine prodotto in modo dettagliato. Descrivi:"
+                context_text = """Analizza questa immagine prodotto in modo dettagliato.
+IMPORTANTE: Concentrati SOLO sul prodotto, IGNORA completamente eventuali persone/modelli presenti.
+
+Descrivi:"""
             
             response = self.anthropic_client.messages.create(
                 model=self.model,
@@ -293,13 +305,15 @@ Descrivi in modo dettagliato:"""
                             {
                                 "type": "text",
                                 "text": f"""{context_text}
-1. Tipo di prodotto e categoria
-2. Caratteristiche visibili (colori, materiali, dimensioni apparenti)
-3. Design e stile
-4. Dettagli distintivi o particolari
-5. Contesto d'uso suggerito
-6. Qualità percepita
+1. Tipo di prodotto e categoria (es: abbigliamento, accessorio, calzatura)
+2. Caratteristiche visibili del PRODOTTO (colori, materiali, texture, pattern)
+3. Design e stile del PRODOTTO
+4. Dettagli distintivi o particolari del PRODOTTO (cuciture, bottoni, zip, decorazioni)
+5. Forma, taglio e silhouette
+6. Contesto d'uso suggerito (casual, formale, sportivo, etc.)
+7. Qualità percepita dei materiali
 
+NON menzionare modelli, persone o manichini. Descrivi SOLO il prodotto.
 Sii specifico e dettagliato. Rispondi in italiano."""
                             }
                         ]
@@ -454,32 +468,137 @@ Sii specifico e dettagliato. Rispondi in italiano."""
             return []
     
     def scrape_product_page(self, url: str) -> str:
-        """Scrape contenuto da una pagina prodotto"""
+        """Scrape contenuto da una pagina prodotto con metodi multipli e pulizia avanzata"""
+        
+        # **METODO 1: BeautifulSoup standard**
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
-            response = requests.get(url, headers=headers, timeout=10)
+            
+            response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
             
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Rimuovi script e style
-                for script in soup(["script", "style"]):
-                    script.decompose()
+                # **PULIZIA AVANZATA**: Rimuovi elementi non necessari
+                # Rimuovi script, style, nav, footer, header, aside, form
+                for element in soup(['script', 'style', 'nav', 'footer', 'header', 
+                                    'aside', 'form', 'iframe', 'noscript', 'svg']):
+                    element.decompose()
                 
-                # Estrai testo
-                text = soup.get_text(separator=' ', strip=True)
+                # Rimuovi elementi con classi/id comuni per menu e navigation
+                for element in soup.find_all(class_=lambda x: x and any(
+                    keyword in str(x).lower() for keyword in 
+                    ['menu', 'nav', 'sidebar', 'footer', 'header', 'cookie', 
+                     'popup', 'modal', 'ad', 'banner', 'social', 'share']
+                )):
+                    element.decompose()
+                
+                for element in soup.find_all(id=lambda x: x and any(
+                    keyword in str(x).lower() for keyword in 
+                    ['menu', 'nav', 'sidebar', 'footer', 'header', 'cookie']
+                )):
+                    element.decompose()
+                
+                # **ESTRAZIONE MIRATA**: Priorità a title e body content
+                extracted_parts = []
+                
+                # 1. Title della pagina
+                if soup.title:
+                    title_text = soup.title.get_text(strip=True)
+                    extracted_parts.append(f"TITOLO: {title_text}")
+                
+                # 2. Meta description
+                meta_desc = soup.find('meta', attrs={'name': 'description'})
+                if meta_desc and meta_desc.get('content'):
+                    extracted_parts.append(f"DESCRIZIONE: {meta_desc['content']}")
+                
+                # 3. H1 headings (spesso contengono nome prodotto)
+                h1_tags = soup.find_all('h1')
+                for h1 in h1_tags[:3]:  # Max 3 H1
+                    h1_text = h1.get_text(strip=True)
+                    if h1_text:
+                        extracted_parts.append(f"H1: {h1_text}")
+                
+                # 4. Contenuto main/article (dove di solito sta la descrizione prodotto)
+                main_content = soup.find('main') or soup.find('article') or soup.find(class_=lambda x: x and 'content' in str(x).lower())
+                
+                if main_content:
+                    # Estrai solo testo dal main content
+                    text = main_content.get_text(separator=' ', strip=True)
+                else:
+                    # Fallback: estrai tutto il body
+                    text = soup.get_text(separator=' ', strip=True)
                 
                 # Pulisci testo
+                text = re.sub(r'\s+', ' ', text)  # Rimuovi spazi multipli
+                text = re.sub(r'[\r\n\t]+', ' ', text)  # Rimuovi newline e tab
+                
+                # Combina parti estratte
+                combined = " | ".join(extracted_parts) + " | CONTENUTO: " + text
+                
+                # Limita lunghezza (max 1500 caratteri per pagina)
+                return combined[:1500]
+            
+            else:
+                # Se status code non è 200, prova metodo alternativo
+                return self._scrape_with_selenium_fallback(url)
+        
+        except requests.exceptions.RequestException as e:
+            # Se requests fallisce, prova metodo alternativo
+            st.warning(f"⚠️ Errore requests per {url}: {e}. Tentativo metodo alternativo...")
+            return self._scrape_with_raw_request(url)
+        
+        except Exception as e:
+            st.warning(f"⚠️ Errore generico scraping {url}: {e}")
+            return ""
+    
+    def _scrape_with_raw_request(self, url: str) -> str:
+        """Metodo alternativo: richiesta HTTP raw più semplice"""
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            )
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode('utf-8', errors='ignore')
+                
+                # Parsing minimale con BeautifulSoup
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # Rimuovi elementi non necessari
+                for element in soup(['script', 'style', 'nav', 'footer', 'header']):
+                    element.decompose()
+                
+                # Estrai title
+                title = soup.title.get_text(strip=True) if soup.title else ""
+                
+                # Estrai body text
+                text = soup.get_text(separator=' ', strip=True)
                 text = re.sub(r'\s+', ' ', text)
                 
-                # Limita lunghezza (max 1000 caratteri per pagina)
-                return text[:1000]
-            else:
-                return ""
+                combined = f"TITOLO: {title} | CONTENUTO: {text}"
+                return combined[:1500]
+        
         except Exception as e:
+            st.warning(f"⚠️ Fallback urllib fallito per {url}: {e}")
             return ""
+    
+    def _scrape_with_selenium_fallback(self, url: str) -> str:
+        """Metodo fallback avanzato (solo se disponibile)"""
+        # Placeholder per eventuale implementazione Selenium/Playwright
+        # Per ora ritorna stringa vuota
+        st.warning(f"⚠️ Metodo Selenium non implementato per {url}")
+        return ""
     
     def get_ean_context(self, ean: str, product_code: str = None) -> str:
         """Ottieni contesto da ricerca EAN su Google"""
@@ -518,7 +637,15 @@ Sii specifico e dettagliato. Rispondi in italiano."""
             for i, url in enumerate(urls):
                 st.markdown(f"**{i+1}. {url}**")
                 
-                content = self.scrape_product_page(url)
+                # **RETRY LOGIC**: Prova fino a 2 volte per ogni URL
+                content = ""
+                for attempt in range(2):
+                    content = self.scrape_product_page(url)
+                    if content:
+                        break
+                    elif attempt == 0:
+                        st.caption("⏳ Retry in corso...")
+                        time.sleep(2)
                 
                 scrape_log = {
                     'url': url,
@@ -1035,9 +1162,10 @@ def main():
                     images_dict = generator.load_images_from_zip(images_zip)
                     if images_dict:
                         st.session_state.images_loaded = True
+                        # ✅ ASSICURATI che generator abbia le immagini
+                        generator.product_images = images_dict
                         st.info(f"🎨 **Formati supportati:** JPG, PNG, WEBP, GIF, BMP")
                         st.info(f"📝 **Nota:** Le immagini verranno analizzate automaticamente durante la generazione")
-                        generator.product_images = images_dict
     
     # Mostra stato elaborazione se in corso
     if st.session_state.processing_status != 'idle':
